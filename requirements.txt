@@ -1,0 +1,23 @@
+# ── Core ──
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.9.0
+pydantic-settings>=2.5.0
+
+# ── LLM ──
+openai>=1.50.0
+
+# ── Knowledge Graph ──
+neo4j>=5.24.0
+
+# ── Web Search ──
+tavily-python>=0.5.0
+httpx>=0.27.0
+
+# ── Data / ML ──
+numpy>=1.26.0
+scikit-learn>=1.5.0
+
+# ── Dev / Test ──
+pytest>=8.0.0
+pytest-asyncio>=0.24.0
