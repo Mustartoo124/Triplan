@@ -1,13 +1,14 @@
 """Knowledge Graph client — wraps Neo4j for ontological queries.
 
 This is the interface that the SemanticAgent uses.  The actual KG schema
-(nodes, relationships) should be constructed separately via a data-loading
-script.  This module only reads from the graph.
+(nodes, relationships) is constructed by scripts/seed_knowledge_graph.py.
+This module only reads from the graph.
 
-Expected KG schema:
-    (:Category {name})
-    (:Category)-[:IS_SUBCATEGORY_OF]->(:ParentCategory)
+Schema:
+    (:ParentCategory {name})
+    (:Category {name})-[:IS_SUBCATEGORY_OF]->(:ParentCategory)
     (:PlaceType {name})-[:BELONGS_TO]->(:Category)
+    (:Synonym {name})-[:MAPS_TO]->(:PlaceType)
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ class KnowledgeGraphClient:
                     settings.neo4j_uri,
                     auth=(settings.neo4j_user, settings.neo4j_password),
                 )
+                self._driver.verify_connectivity()
             except Exception as e:
                 logger.warning("Neo4j connection failed: %s. Using fallback.", e)
                 return None
@@ -49,37 +51,115 @@ class KnowledgeGraphClient:
 
     # ── Queries ──
 
-    async def expand_category(
-        self, interest: str, max_depth: int = 3
-    ) -> set[str]:
-        """Expand a user interest into low-level Google Maps types.
+    async def expand_interest(self, interest: str) -> dict:
+        """Expand a user interest into Google Maps types.
 
-        Traverses IS_SUBCATEGORY_OF relationships up to max_depth hops.
-        Falls back to a static mapping when Neo4j is unavailable.
+        Tries in order:
+          1. Category match  (e.g., "Asian Food" → types)
+          2. ParentCategory match (e.g., "Nightlife" → all child types)
+          3. Synonym match   (e.g., "sushi" → types)
+          4. Fallback static ontology
+
+        Returns dict with keys: types (set), categories (list), source (str)
         """
         driver = self._get_driver()
         if driver is None:
-            return self._fallback_expand(interest)
+            return {
+                "types": self._fallback_expand(interest),
+                "categories": [],
+                "source": "fallback",
+            }
 
         try:
-            query = """
-            MATCH (start:Category)
-            WHERE toLower(start.name) CONTAINS toLower($interest)
-            CALL apoc.path.subgraphNodes(start, {
-                relationshipFilter: '<IS_SUBCATEGORY_OF',
-                maxLevel: $depth
-            }) YIELD node
-            RETURN collect(DISTINCT node.name) AS types
-            """
-            with driver.session() as session:
-                result = session.run(query, interest=interest, depth=max_depth)
-                record = result.single()
-                if record:
-                    return set(record["types"])
+            # 1. Try Category match
+            result = self._query_category(driver, interest)
+            if result["types"]:
+                result["source"] = "category"
+                return result
+
+            # 2. Try ParentCategory match
+            result = self._query_parent_category(driver, interest)
+            if result["types"]:
+                result["source"] = "parent_category"
+                return result
+
+            # 3. Try Synonym match
+            result = self._query_synonym(driver, interest)
+            if result["types"]:
+                result["source"] = "synonym"
+                return result
+
         except Exception as e:
             logger.warning("KG query failed: %s. Using fallback.", e)
 
-        return self._fallback_expand(interest)
+        return {
+            "types": self._fallback_expand(interest),
+            "categories": [],
+            "source": "fallback",
+        }
+
+    async def expand_category(
+        self, interest: str, max_depth: int = 3
+    ) -> set[str]:
+        """Simplified interface — returns just the set of types."""
+        result = await self.expand_interest(interest)
+        return result["types"]
+
+    # ── Private query methods ──
+
+    @staticmethod
+    def _query_category(driver, interest: str) -> dict:
+        with driver.session() as session:
+            record = session.run(
+                """
+                MATCH (c:Category)
+                WHERE toLower(c.name) CONTAINS toLower($interest)
+                MATCH (t:PlaceType)-[:BELONGS_TO]->(c)
+                RETURN collect(DISTINCT t.name) AS types,
+                       collect(DISTINCT c.name) AS categories
+                """,
+                interest=interest,
+            ).single()
+            return {
+                "types": set(record["types"]),
+                "categories": record["categories"],
+            }
+
+    @staticmethod
+    def _query_parent_category(driver, interest: str) -> dict:
+        with driver.session() as session:
+            record = session.run(
+                """
+                MATCH (p:ParentCategory)
+                WHERE toLower(p.name) CONTAINS toLower($interest)
+                MATCH (c:Category)-[:IS_SUBCATEGORY_OF]->(p)
+                MATCH (t:PlaceType)-[:BELONGS_TO]->(c)
+                RETURN collect(DISTINCT t.name) AS types,
+                       collect(DISTINCT c.name) AS categories
+                """,
+                interest=interest,
+            ).single()
+            return {
+                "types": set(record["types"]),
+                "categories": record["categories"],
+            }
+
+    @staticmethod
+    def _query_synonym(driver, interest: str) -> dict:
+        with driver.session() as session:
+            record = session.run(
+                """
+                MATCH (s:Synonym)
+                WHERE toLower(s.name) = toLower($interest)
+                MATCH (s)-[:MAPS_TO]->(t:PlaceType)
+                RETURN collect(DISTINCT t.name) AS types
+                """,
+                interest=interest,
+            ).single()
+            return {
+                "types": set(record["types"]),
+                "categories": [],
+            }
 
     # ── Static fallback ontology ──
 

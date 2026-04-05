@@ -76,22 +76,46 @@ class FestivalAgent(BaseAgent):
             return date(y1, m1, d1), date(y2, m2, d2)
 
         # Pattern: "26 - 29/3"  (day range within one month)
-        m = re.match(r"(\d{1,2})\s*-\s*(\d{1,2})/(\d{1,2})", time_str)
+        m = re.match(r"(\d{1,2})\s*-\s*(\d{1,2})/(\d{1,2})$", time_str)
         if m:
             d1, d2, month = int(m.group(1)), int(m.group(2)), int(m.group(3))
             return date(default_year, month, d1), date(default_year, month, d2)
 
-        # Pattern: "6/11"  (single day)
+        # Pattern: "4 - 6/12/2025"  (day range within one month with year)
+        m = re.match(r"(\d{1,2})\s*-\s*(\d{1,2})/(\d{1,2})/(\d{4})$", time_str)
+        if m:
+            d1, d2, month, year = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+            return date(year, month, d1), date(year, month, d2)
+
+        # Pattern: "31/12/2025"  (single day with explicit year)
+        m = re.match(r"^(\d{1,2})/(\d{1,2})/(\d{4})$", time_str)
+        if m:
+            day, month, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            return date(year, month, day), date(year, month, day)
+
+        # Pattern: "6/11"  (single day, default year)
         m = re.match(r"^(\d{1,2})/(\d{1,2})$", time_str)
         if m:
             day, month = int(m.group(1)), int(m.group(2))
             return date(default_year, month, day), date(default_year, month, day)
 
-        # Pattern: "24/2 - 31/3"  (cross-month range)
-        m = re.match(r"(\d{1,2})/(\d{1,2})\s*-\s*(\d{1,2})/(\d{1,2})", time_str)
+        # Pattern: "24/2 - 31/3"  (cross-month range, no year)
+        m = re.match(r"(\d{1,2})/(\d{1,2})\s*-\s*(\d{1,2})/(\d{1,2})$", time_str)
         if m:
             d1, m1, d2, m2 = (int(x) for x in m.groups())
             return date(default_year, m1, d1), date(default_year, m2, d2)
+
+        # Pattern: "23/9 - 5/10/2025"  (cross-month range with year on end)
+        m = re.match(r"(\d{1,2})/(\d{1,2})\s*-\s*(\d{1,2})/(\d{1,2})/(\d{4})$", time_str)
+        if m:
+            d1, m1, d2, m2, year = (int(x) for x in m.groups())
+            return date(year, m1, d1), date(year, m2, d2)
+
+        # Pattern: "31/10 - 11/12/2025"  (cross-month with year, DD/MM - DD/MM/YYYY)
+        m = re.match(r"(\d{1,2})/(\d{1,2})\s*-\s*(\d{1,2})/(\d{1,2})/(\d{4})$", time_str)
+        if m:
+            d1, m1, d2, m2, year = (int(x) for x in m.groups())
+            return date(year, m1, d1), date(year, m2, d2)
 
         self.logger.warning("Could not parse time string: '%s'", time_str)
         return None, None
@@ -119,10 +143,14 @@ class FestivalAgent(BaseAgent):
             self.logger.info("Cache hit for '%s'", fest.name)
             return POI(**cached["value"])
 
-        # 3a. Web search for details
-        search_results = await search_web(
-            query=f"{fest.name} {fest.province} {start_dt.year} venue address agenda schedule",
-        )
+        # 3a. Web search for details (non-fatal on failure)
+        try:
+            search_results = await search_web(
+                query=f"{fest.name} {fest.province} {start_dt.year} venue address agenda schedule",
+            )
+        except Exception as e:
+            self.logger.warning("Web search failed for '%s': %s", fest.name, e)
+            search_results = ""
 
         # 3b. Geocode
         location_query = " ".join(
@@ -130,7 +158,7 @@ class FestivalAgent(BaseAgent):
         )
         lat, lng = await geocode_address(location_query)
 
-        # 3c. LLM categorisation + extraction
+        # 3c. LLM categorisation + extraction (non-fatal on failure)
         types, visit_min, agenda = await self._categorise(fest, search_results)
 
         if lat is None or lng is None:
@@ -193,6 +221,48 @@ class FestivalAgent(BaseAgent):
                 data.get("estimated_visit_minutes", 120),
                 data.get("agenda", ""),
             )
-        except (json.JSONDecodeError, KeyError):
-            self.logger.warning("LLM categorisation failed for '%s'", fest.name)
-            return ["tourist_attraction"], 120, ""
+        except Exception as e:
+            self.logger.warning("LLM categorisation failed for '%s': %s", fest.name, e)
+            # Fallback: infer types from description keywords
+            return self._fallback_categorise(fest)
+
+    @staticmethod
+    def _fallback_categorise(fest: RawFestival) -> tuple[list[str], int, str]:
+        """Keyword-based type inference when LLM is unavailable."""
+        desc = (fest.name + " " + fest.description).lower()
+        types = ["tourist_attraction"]
+        visit_min = 120
+
+        keyword_map = {
+            "food": "food",
+            "culinary": "food",
+            "cuisine": "food",
+            "restaurant": "restaurant",
+            "art": "art_gallery",
+            "exhibition": "art_gallery",
+            "painting": "art_gallery",
+            "photo": "art_gallery",
+            "music": "night_club",
+            "festival": "tourist_attraction",
+            "flower": "park",
+            "garden": "park",
+            "market": "market",
+            "fair": "market",
+            "book": "book_store",
+            "museum": "museum",
+            "culture": "tourist_attraction",
+            "fashion": "clothing_store",
+            "textile": "store",
+            "shop": "shopping_mall",
+        }
+
+        for keyword, gtype in keyword_map.items():
+            if keyword in desc and gtype not in types:
+                types.append(gtype)
+
+        if "food" in types or "restaurant" in types:
+            visit_min = 90
+        elif "art_gallery" in types:
+            visit_min = 60
+
+        return types, visit_min, ""

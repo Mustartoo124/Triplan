@@ -27,6 +27,12 @@ class ClusteringAgent(BaseAgent):
         if not candidates:
             return {d: [] for d in range(n_days)}
 
+        # Limit candidates to top-N by composite score to keep clusters manageable
+        max_total = user_input.max_places_per_day * n_days * 3  # 3x buffer
+        if len(candidates) > max_total:
+            candidates = sorted(candidates, key=lambda p: p.composite_score, reverse=True)[:max_total]
+            self.logger.info("Trimmed candidates to top %d for clustering.", max_total)
+
         # Separate festivals (with day constraints) from regular POIs
         festivals: list[POI] = [p for p in candidates if p.source == "festival"]
         regular: list[POI] = [p for p in candidates if p.source != "festival"]
