@@ -15,7 +15,12 @@ class Settings(BaseSettings):
 
     # ── LLM ──
     openai_api_key: str = ""
-    llm_model: str = "gpt-4o"
+    llm_model: str = "gpt-4o-mini"
+    # Provider: "ollama" uses local Ollama server; "openai" uses OpenAI API
+    llm_provider: str = "ollama"
+    ollama_base_url: str = "http://localhost:11434/v1"
+    # Model used by the conversational ChatAgent (can differ from planning model)
+    chat_model: str = "llama3.2"
 
     # ── Neo4j ──
     neo4j_uri: str = "bolt://localhost:7687"

@@ -5,7 +5,7 @@ import logging
 from fastapi import FastAPI
 
 from src.api.middleware import setup_middleware
-from src.api.routes import health, trip
+from src.api.routes import chat, health, trip
 from src.config import settings
 
 
@@ -26,5 +26,6 @@ def create_app() -> FastAPI:
     setup_middleware(app)
     app.include_router(health.router)
     app.include_router(trip.router, prefix="/api/v1")
+    app.include_router(chat.router, prefix="/api/v1")
 
     return app

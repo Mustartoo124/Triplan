@@ -1,4 +1,5 @@
 from src.agents.base import BaseAgent
+from src.agents.chat_agent import ChatAgent
 from src.agents.festival_agent import FestivalAgent
 from src.agents.semantic_agent import SemanticAgent
 from src.agents.scoring_agent import ScoringAgent
@@ -7,6 +8,7 @@ from src.agents.routing_agent import RoutingAgent
 
 __all__ = [
     "BaseAgent",
+    "ChatAgent",
     "FestivalAgent",
     "SemanticAgent",
     "ScoringAgent",

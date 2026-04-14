@@ -44,6 +44,15 @@ class BaseAgent(ABC):
 
     # ── LLM helper ──
 
+    @staticmethod
+    def _make_llm_client():
+        """Return an AsyncOpenAI client pointed at Ollama or OpenAI."""
+        from openai import AsyncOpenAI
+
+        if settings.llm_provider == "ollama":
+            return AsyncOpenAI(base_url=settings.ollama_base_url, api_key="ollama")
+        return AsyncOpenAI(api_key=settings.openai_api_key)
+
     async def llm_call(
         self,
         system_prompt: str,
@@ -52,9 +61,7 @@ class BaseAgent(ABC):
         response_format: Any = None,
     ) -> str:
         """Call the configured LLM.  Returns the assistant message content."""
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(api_key=settings.openai_api_key)
+        client = self._make_llm_client()
 
         messages = [
             {"role": "system", "content": system_prompt},
